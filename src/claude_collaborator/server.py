@@ -1209,10 +1209,9 @@ What are the potential risks, edge cases, or problems? Be concise and practical.
 
 def main():
     """Main entry point"""
-    # Get codebase path from environment or use current directory
-    codebase_path = os.getenv("CODEBASE_PATH")
-
-    server = ClaudeCollaboratorServer(codebase_path)
+    # The server uses the current working directory set by Claude Desktop's "cwd" config
+    # No need to pass codebase_path - it will be auto-detected from cwd
+    server = ClaudeCollaboratorServer()
     asyncio.run(server.run())
 
 

@@ -1,0 +1,38 @@
+[project]
+name = "claude-collaborator"
+version = "0.1.0"
+description = "Multi-AI MCP server for large C# codebases - Claude + GLM working together"
+authors = [{name = "Koray Elbek", email = "korayelbek@gmail.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=0.9.0",
+    "python-dotenv>=1.0.0",
+]
+
+readme = "README.md"
+keywords = ["mcp", "claude", "codebase", "csharp", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+
+[project.optional-dependencies]
+glm = ["zai-sdk>=0.1.0", "openai>=1.0.0"]
+
+[project.scripts]
+claude-collaborator = "claude_collaborator.server:main"
+
+[project.urls]
+Homepage = "https://github.com/coreeye/claude-collaborator-mcp"
+Repository = "https://github.com/coreeye/claude-collaborator-mcp"
+Documentation = "https://github.com/coreeye/claude-collaborator-mcp/blob/main/README.md"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include .env.example
+recursive-include src/claude_collaborator *.py
+recursive-include docs *.md

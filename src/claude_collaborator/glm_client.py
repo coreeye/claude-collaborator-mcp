@@ -71,11 +71,13 @@ Be specific and reference code elements when possible."""
                 ],
                 max_tokens=max_tokens,
                 temperature=1.0,
-                thinking={"type": "enabled"},
                 timeout=self.timeout
             )
 
-            return response.choices[0].message.content
+            # GLM-5 puts reasoning in reasoning_content field
+            message = response.choices[0].message
+            content = message.content or message.reasoning_content or ""
+            return content
 
         except ImportError:
             # Fallback to OpenAI-compatible API
@@ -120,11 +122,13 @@ Be specific and reference code elements when possible."""
                 ],
                 max_tokens=max_tokens,
                 temperature=1.0,
-                thinking={"type": "enabled"},
                 timeout=self.timeout
             )
 
-            return response.choices[0].message.content
+            # GLM-5 puts reasoning in reasoning_content field
+            message = response.choices[0].message
+            content = message.content or message.reasoning_content or ""
+            return content
 
         except Exception as e:
             return f"Error calling GLM API: {str(e)}"
@@ -177,11 +181,13 @@ Provide:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=2048,
                 temperature=1.0,
-                thinking={"type": "enabled"},
                 timeout=self.timeout
             )
 
-            return response.choices[0].message.content
+            # GLM-5 puts reasoning in reasoning_content field
+            message = response.choices[0].message
+            content = message.content or message.reasoning_content or ""
+            return content
 
         except Exception as e:
             return f"Error comparing code: {str(e)}"
@@ -234,11 +240,13 @@ Provide a comprehensive analysis including:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
                 temperature=1.0,
-                thinking={"type": "enabled"},
                 timeout=self.timeout
             )
 
-            return response.choices[0].message.content
+            # GLM-5 puts reasoning in reasoning_content field
+            message = response.choices[0].message
+            content = message.content or message.reasoning_content or ""
+            return content
 
         except Exception as e:
             return f"Error performing deep dive: {str(e)}"

@@ -11,9 +11,11 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -70,6 +72,20 @@ class ClaudeCollaboratorServer:
 
         # Automatic context retrieval (stored for tool access)
         self._current_retrieved_context = None
+
+        # GLM Auto-enrich: background results cache
+        self._glm_enrich_results: Dict[str, Any] = {}
+        self._glm_enrich_lock = threading.Lock()
+
+        # Tools that should auto-enrich with GLM (tool_name -> enrich_prompt_template)
+        self._auto_enrich_tools = {
+            "extract_class_structure": "Analyze this class structure for patterns, design issues, and refactoring opportunities:\n\n{result}",
+            "find_class_usages": "Analyze these class usages for coupling patterns and potential issues:\n\n{result}",
+            "find_implementations": "Compare these implementations and note patterns, differences, and best practices:\n\n{result}",
+            "find_similar_code": "Analyze these similar code patterns and suggest which approach is best:\n\n{result}",
+            "lookup_convention": "Evaluate this convention and suggest if it should evolve:\n\n{result}",
+            "get_file_summary": "Based on this file summary, suggest what to explore next:\n\n{result}",
+        }
 
         # Initialize GLM client (optional - independent of codebase)
         try:
@@ -338,6 +354,102 @@ class ClaudeCollaboratorServer:
         except Exception:
             return None
 
+    # ==================== GLM AUTO-ENRICH & PROACTIVE SUGGESTIONS ====================
+
+    def _auto_enrich_with_glm(self, tool_name: str, arguments: dict, result_text: str):
+        """
+        Run GLM enrichment in background thread (non-blocking).
+
+        Results are stored in _glm_enrich_results and can be retrieved later.
+        """
+        if not self.glm_available:
+            return
+
+        if not self.config.get("auto_glm_enrich", True):
+            return
+
+        if tool_name not in self._auto_enrich_tools:
+            return
+
+        # Generate unique key for this enrichment
+        enrich_key = f"{tool_name}_{hash(str(arguments))}_{time.time()}"
+
+        def run_glm_enrich():
+            try:
+                prompt_template = self._auto_enrich_tools[tool_name]
+                prompt = prompt_template.format(result=self._truncate_for_glm(result_text, 8000))
+
+                glm_response = self.glm.explore(
+                    question=f"Auto-enrich for {tool_name}",
+                    context=prompt,
+                    max_tokens=2048
+                )
+
+                # Store result with timestamp
+                with self._glm_enrich_lock:
+                    self._glm_enrich_results[enrich_key] = {
+                        "tool": tool_name,
+                        "timestamp": time.time(),
+                        "response": glm_response
+                    }
+            except Exception as e:
+                # Fail silently - don't block tool execution
+                pass
+
+        # Run in background thread
+        thread = threading.Thread(target=run_glm_enrich, daemon=True)
+        thread.start()
+
+    def _get_glm_suggestion(self, tool_name: str, arguments: dict, result_text: str) -> Optional[str]:
+        """
+        Generate proactive GLM suggestions based on context.
+
+        Returns a suggestion string or None.
+        """
+        if not self.glm_available:
+            return None
+
+        if not self.config.get("glm_proactive_suggestions", True):
+            return None
+
+        # Scenario 1: Large result → suggest summarize_large_file
+        if len(result_text) > 5000:
+            return (
+                "\n\n---\n"
+                "**💡 GLM Tip:** This result is quite large. "
+                "Use `summarize_large_file` to have GLM analyze it comprehensively."
+            )
+
+        # Scenario 2: After discovery tools → suggest glm_explore
+        discovery_tools = ["find_class_usages", "find_implementations", "find_references",
+                          "list_dependencies", "find_similar_code", "lookup_convention"]
+        if tool_name in discovery_tools:
+            return (
+                "\n\n---\n"
+                f"**💡 GLM Tip:** Want deeper insights? Use `glm_explore` to ask "
+                "GLM for research perspectives on these findings."
+            )
+
+        # Scenario 3: Analysis tools → suggest get_alternative
+        analysis_tools = ["extract_class_structure", "get_file_summary",
+                         "explore_project", "analyze_architecture"]
+        if tool_name in analysis_tools:
+            return (
+                "\n\n---\n"
+                f"**💡 GLM Tip:** Use `get_alternative` to get GLM's perspective "
+                "on different approaches before proceeding."
+            )
+
+        # Scenario 4: Pattern matching → suggest risk_check
+        if "pattern" in arguments or tool_name in ["find_similar_code", "lookup_convention"]:
+            return (
+                "\n\n---\n"
+                "**💡 GLM Tip:** Use `risk_check` before making changes to identify "
+                "potential issues and edge cases."
+            )
+
+        return None
+
     def _process_tool_result(
         self,
         tool_name: str,
@@ -402,6 +514,20 @@ class ClaudeCollaboratorServer:
                     arguments=arguments,
                     result_summary=result_summary
                 )
+        except Exception:
+            pass  # Fail silently - don't block tool execution
+
+        # 5. GLM Auto-enrich (non-blocking background call)
+        try:
+            self._auto_enrich_with_glm(tool_name, arguments, result_text)
+        except Exception:
+            pass  # Fail silently - don't block tool execution
+
+        # 6. GLM Proactive Suggestions (adds tips to result)
+        try:
+            suggestion = self._get_glm_suggestion(tool_name, arguments, result_text)
+            if suggestion:
+                display_text += suggestion
         except Exception:
             pass  # Fail silently - don't block tool execution
 

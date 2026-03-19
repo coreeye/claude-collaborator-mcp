@@ -21,7 +21,8 @@ GLM is configured for **creativity** and **deep thinking** — it doesn't just a
 - **Automatic Memory Capture**: Tool results automatically saved to semantic memory
 - **Context Management**: Smart context tracking with automatic compaction
 - **Code Analysis**: Explore any C# project instantly
-- **GLM Integration**: Offload research to another AI model
+- **GLM Auto-Enrich**: GLM automatically provides insights in the background
+- **GLM Proactive Tips**: Context-aware suggestions for when to use GLM
 - **Fast Startup**: Lazy initialization prevents server startup timeout
 
 ## Installation
@@ -177,6 +178,13 @@ The server looks for configuration in this priority order:
 | `cache_size` | `100` | Max files to cache |
 | `cache_ttl` | `3600` | Cache TTL in seconds |
 
+### GLM Settings
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `auto_glm_enrich` | `true` | Automatically enrich with GLM in background |
+| `glm_proactive_suggestions` | `true` | Show context-aware GLM tips |
+
 ### Environment Variables
 
 | Variable | Description |
@@ -191,6 +199,8 @@ The server looks for configuration in this priority order:
 | `AUTO_CAPTURE_ENABLED` | Enable auto-capture (true/false) |
 | `CACHE_SIZE` | File cache size |
 | `CACHE_TTL` | File cache TTL |
+| `AUTO_GLM_ENRICH` | Enable GLM auto-enrich (true/false) |
+| `GLM_PROACTIVE_SUGGESTIONS` | Enable GLM tips (true/false) |
 
 ## Automatic Memory Capture
 
@@ -258,6 +268,29 @@ pip install claude-collaborator[glm]
 export GLM_API_KEY=your_api_key_here
 ```
 
+### Auto-Enrich Mode
+
+GLM automatically provides insights in the background for certain tools:
+
+- `extract_class_structure` → GLM analyzes patterns and refactoring opportunities
+- `find_class_usages` → GLM identifies coupling issues
+- `find_implementations` → GLM compares implementation approaches
+- `find_similar_code` → GLM provides deeper pattern analysis
+- `lookup_convention` → GLM evaluates if the convention should evolve
+
+These run **non-blocking** in the background, so Claude never waits.
+
+### Proactive Suggestions
+
+The server intelligently suggests using GLM based on context:
+
+| Context | Suggestion |
+|---------|------------|
+| Result is large (>5000 chars) | "Use `summarize_large_file` to have GLM analyze it" |
+| After discovery tools | "Use `glm_explore` for research perspectives" |
+| After analysis tools | "Use `get_alternative` for different approaches" |
+| Pattern matching | "Use `risk_check` before making changes" |
+
 ### GLM Configuration
 
 GLM runs with **temperature 1.0** and **deep thinking enabled** — optimized to:
@@ -271,6 +304,13 @@ GLM runs with **temperature 1.0** and **deep thinking enabled** — optimized to
 - `glm-5` - Latest model with deep thinking (default)
 - `glm-4-flash` - Faster responses
 - `glm-4-plus` - Enhanced capabilities
+
+### GLM Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `auto_glm_enrich` | `true` | Enable background GLM enrichment |
+| `glm_proactive_suggestions` | `true` | Show context-aware GLM tips |
 
 ## Development
 

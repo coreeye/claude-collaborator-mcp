@@ -44,6 +44,9 @@ class Config:
         # Compaction settings
         "compaction_threshold": ["COMPACTION_THRESHOLD"],
         "compaction_aggressive": ["COMPACTION_AGGRESSIVE"],
+        # GLM Auto-enrich settings
+        "auto_glm_enrich": ["AUTO_GLM_ENRICH"],
+        "glm_proactive_suggestions": ["GLM_PROACTIVE_SUGGESTIONS"],
     }
 
     def __init__(self, working_dir: Path = None):
@@ -74,6 +77,9 @@ class Config:
             # Compaction defaults
             "compaction_threshold": 0.8,  # utilization % before compaction
             "compaction_aggressive": False,  # enable aggressive compaction
+            # GLM Auto-enrich defaults
+            "auto_glm_enrich": True,  # automatically enrich with GLM in background
+            "glm_proactive_suggestions": True,  # show GLM tips in tool results
         }
 
         # Load from home config (global defaults)

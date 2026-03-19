@@ -24,6 +24,8 @@ classifiers = [
 
 [project.optional-dependencies]
 glm = ["zai-sdk>=0.1.0", "openai>=1.0.0"]
+vector = ["sentence-transformers>=2.2.0", "numpy>=1.21.0"]
+all = ["claude-collaborator[glm,vector]"]
 
 [project.scripts]
 claude-collaborator = "claude_collaborator.server:main"

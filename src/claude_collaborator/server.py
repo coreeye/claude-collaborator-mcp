@@ -13,6 +13,7 @@ import re
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -28,6 +29,15 @@ from claude_collaborator.code_analyzer import CSharpCodeAnalyzer
 from claude_collaborator.memory_store import MemoryStore
 from claude_collaborator.glm_client import GLMClient
 from claude_collaborator.config import load_config
+
+# Optional vector memory components
+try:
+    from claude_collaborator.memory_vector import VectorStore
+    from claude_collaborator.memory_auto import AutoCapture
+    from claude_collaborator.memory_context import ContextTracker
+    VECTOR_MEMORY_AVAILABLE = True
+except ImportError:
+    VECTOR_MEMORY_AVAILABLE = False
 
 
 class ClaudeCollaboratorServer:
@@ -47,6 +57,11 @@ class ClaudeCollaboratorServer:
         self.codebase_path = None
         self.memory = None
         self.analyzer = None
+
+        # Vector memory components (initialized when codebase is set, if available)
+        self.vector_store = None
+        self.auto_capture = None
+        self.context_tracker = None
 
         # Initialize GLM client (optional - independent of codebase)
         try:
@@ -76,6 +91,27 @@ class ClaudeCollaboratorServer:
         self.codebase_path = path
         self.memory = MemoryStore(str(path))
         self.analyzer = CSharpCodeAnalyzer(str(path))
+
+        # Initialize vector memory components if available
+        if VECTOR_MEMORY_AVAILABLE:
+            try:
+                self.vector_store = VectorStore(str(path))
+                self.auto_capture = AutoCapture(
+                    self.vector_store,
+                    self.memory,
+                    enabled=self.config.get("auto_capture_enabled", True)
+                )
+                context_threshold = self.config.get("context_threshold", 50000)
+                self.context_tracker = ContextTracker(
+                    self.vector_store,
+                    threshold_chars=context_threshold
+                )
+            except Exception as e:
+                # Graceful fallback if vector memory fails to initialize
+                print(f"Warning: Vector memory initialization failed: {e}")
+                self.vector_store = None
+                self.auto_capture = None
+                self.context_tracker = None
 
     def switch_codebase(self, path: str) -> dict:
         """
@@ -184,6 +220,13 @@ class ClaudeCollaboratorServer:
             return content[:limit] + "\n\n... [truncated]"
         return content
 
+    def _maybe_auto_capture(self, tool_name: str, arguments: dict, result: str) -> Optional[str]:
+        """Attempt auto-capture of tool result if available and significant"""
+        if self.auto_capture:
+            captured_id = self.auto_capture.capture_tool_result(tool_name, arguments, result)
+            return captured_id
+        return None
+
     def _register_tools(self):
         """Register all MCP tools"""
 
@@ -270,6 +313,65 @@ class ClaudeCollaboratorServer:
                 Tool(
                     name="memory_status",
                     description="Get memory store statistics",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                ),
+
+                # ==================== SEMANTIC MEMORY TOOLS ====================
+                Tool(
+                    name="memory_semantic_search",
+                    description="Search memory by meaning (semantic similarity), not just keywords. Finds related concepts even without exact word matches.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query in natural language"},
+                            "limit": {"type": "number", "description": "Max results (default: 5)"},
+                            "category": {"type": "string", "description": "Filter by category (optional)"}
+                        },
+                        "required": ["query"]
+                    }
+                ),
+                Tool(
+                    name="memory_vector_stats",
+                    description="Get vector memory statistics including embedding info and entry counts",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                ),
+                Tool(
+                    name="context_offload",
+                    description="Manually trigger context offload to memory. Useful when context is getting large.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "current_query": {
+                                "type": "string",
+                                "description": "Current work query for relevance scoring (helps keep relevant context)"
+                            }
+                        },
+                        "required": []
+                    }
+                ),
+                Tool(
+                    name="context_retrieve",
+                    description="Retrieve relevant memories from both working memory and offloaded context for a query",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query"},
+                            "limit": {"type": "number", "description": "Max results (default: 3)"}
+                        },
+                        "required": ["query"]
+                    }
+                ),
+                Tool(
+                    name="context_stats",
+                    description="Get context tracking statistics including size, utilization, and item counts",
                     inputSchema={
                         "type": "object",
                         "properties": {},
@@ -805,6 +907,89 @@ CONTEXT LIMIT: Your approach only (max 10K chars), no extra context.""",
                         output += f"\n  - {cat}: {count}"
                     return [TextContent(type="text", text=output)]
 
+                # ==================== SEMANTIC MEMORY TOOLS ====================
+                elif name == "memory_semantic_search":
+                    if not self.vector_store:
+                        return [TextContent(type="text", text="Semantic search not available. Install with: pip install -e '.[vector]'")]
+
+                    query = arguments["query"]
+                    limit = arguments.get("limit", 5)
+                    category = arguments.get("category")
+
+                    results = self.vector_store.search(query, limit=limit, category=category)
+
+                    if not results:
+                        return [TextContent(type="text", text=f"No semantic matches found for '{query}'")]
+
+                    output = f"## Semantic Search Results: '{query}'\n\n"
+                    for i, r in enumerate(results, 1):
+                        output += f"### {i}. [{r['category']}] {r['topic']}\n"
+                        output += f"**Relevance:** {r['score']:.2f}\n\n"
+                        snippet = r['content'][:300] + "..." if len(r['content']) > 300 else r['content']
+                        output += f"{snippet}\n\n"
+                    return [TextContent(type="text", text=output)]
+
+                elif name == "memory_vector_stats":
+                    if not self.vector_store:
+                        return [TextContent(type="text", text="Vector memory not available. Install with: pip install -e '.[vector]'")]
+
+                    stats = self.vector_store.get_stats()
+                    output = f"""Vector Memory Status:
+- Database: {stats['db_path']}
+- Embeddings Available: {stats['embeddings_available']}
+- Model: {stats['embedding_model']}
+- Total Entries: {stats['total_entries']}
+- Entries by Category:"""
+                    for cat, count in stats['categories'].items():
+                        output += f"\n  - {cat}: {count}"
+                    return [TextContent(type="text", text=output)]
+
+                elif name == "context_offload":
+                    if not self.context_tracker:
+                        return [TextContent(type="text", text="Context tracking not available. Install with: pip install -e '.[vector]'")]
+
+                    current_query = arguments.get("current_query", "")
+                    result = self.context_tracker._trigger_offload(current_query)
+
+                    output = f"## Context Offload Complete\n\n"
+                    output += f"- Offloaded {result['offloaded_count']} items\n"
+                    output += f"- Offloaded size: {result['offloaded_size']} chars\n"
+                    output += f"- Remaining size: {result['remaining_size']} chars\n"
+                    return [TextContent(type="text", text=output)]
+
+                elif name == "context_retrieve":
+                    if not self.context_tracker:
+                        return [TextContent(type="text", text="Context tracking not available. Install with: pip install -e '.[vector]'")]
+
+                    query = arguments["query"]
+                    limit = arguments.get("limit", 3)
+
+                    results = self.context_tracker.retrieve_relevant(query, limit=limit)
+
+                    output = f"## Relevant Context: '{query}'\n\n"
+                    for i, r in enumerate(results, 1):
+                        output += f"### {i}. [{r.get('source', 'unknown')}] {r.get('item_type', 'general')}\n"
+                        if 'score' in r:
+                            output += f"**Relevance:** {r['score']:.2f}\n\n"
+                        output += f"{r.get('content', '')[:300]}\n\n"
+                    return [TextContent(type="text", text=output)]
+
+                elif name == "context_stats":
+                    if not self.context_tracker:
+                        return [TextContent(type="text", text="Context tracking not available. Install with: pip install -e '.[vector]'")]
+
+                    stats = self.context_tracker.get_stats()
+                    output = f"""Context Tracking Status:
+- Current Size: {stats['current_size']} chars
+- Item Count: {stats['item_count']}
+- Threshold: {stats['threshold']} chars
+- Utilization: {stats['utilization']:.1%}
+- Offloaded Items: {stats['offloaded_count']}
+- Items by Type:"""
+                    for item_type, count in stats['items_by_type'].items():
+                        output += f"\n  - {item_type}: {count}"
+                    return [TextContent(type="text", text=output)]
+
                 # ==================== CONTEXT GATHERER TOOLS ====================
                 elif name == "find_similar_code":
                     pattern = arguments["pattern"]
@@ -1236,7 +1421,12 @@ Can you suggest an alternative approach? Keep it practical and concise."""
                         max_tokens=2048
                     )
 
-                    return [TextContent(type="text", text=f"**GLM's Alternative:**\n\n{result}\n\n**YOU (Claude)** should evaluate this and decide whether to adopt it.")]
+                    output = f"**GLM's Alternative:**\n\n{result}\n\n**YOU (Claude)** should evaluate this and decide whether to adopt it."
+
+                    # Auto-capture to vector memory
+                    self._maybe_auto_capture(name, arguments, output)
+
+                    return [TextContent(type="text", text=output)]
 
                 elif name == "risk_check":
                     if not self.glm_available:
@@ -1259,7 +1449,12 @@ What are the potential risks, edge cases, or problems? Be concise and practical.
                         max_tokens=2048
                     )
 
-                    return [TextContent(type="text", text=f"**GLM's Risk Assessment:**\n\n{result}\n\n**YOU (Claude)** should validate which risks are real and prioritize them.")]
+                    output = f"**GLM's Risk Assessment:**\n\n{result}\n\n**YOU (Claude)** should validate which risks are real and prioritize them."
+
+                    # Auto-capture to vector memory
+                    self._maybe_auto_capture(name, arguments, output)
+
+                    return [TextContent(type="text", text=output)]
 
                 # ==================== PROJECT-LEVEL TOOLS ====================
                 elif name == "explore_project":
@@ -1293,6 +1488,9 @@ What are the potential risks, edge cases, or problems? Be concise and practical.
                         category="architecture"
                     )
 
+                    # Auto-capture to vector memory
+                    self._maybe_auto_capture(name, arguments, summary)
+
                     return [TextContent(type="text", text=summary)]
 
                 elif name == "analyze_architecture":
@@ -1317,6 +1515,9 @@ What are the potential risks, edge cases, or problems? Be concise and practical.
                         content=output,
                         category="architecture"
                     )
+
+                    # Auto-capture to vector memory
+                    self._maybe_auto_capture(name, arguments, output)
 
                     return [TextContent(type="text", text=output)]
 

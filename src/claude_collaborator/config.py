@@ -33,6 +33,11 @@ class Config:
         "glm_api_key": ["GLM_API_KEY"],
         "glm_model": ["GLM_MODEL"],
         "memory_path": ["MEMORY_PATH"],
+        # Vector memory settings
+        "embedding_model": ["EMBEDDING_MODEL"],
+        "vector_db_path": ["VECTOR_DB_PATH"],
+        "context_threshold": ["CONTEXT_THRESHOLD"],
+        "auto_capture_enabled": ["AUTO_CAPTURE_ENABLED"],
     }
 
     def __init__(self, working_dir: Path = None):
@@ -52,6 +57,11 @@ class Config:
         self._config = {
             "glm_model": "glm-5",
             "memory_path": ".codebase-memory",
+            # Vector memory defaults
+            "embedding_model": "all-MiniLM-L6-v2",  # Fast, good quality embedding model
+            "vector_db_path": ".codebase-memory/vectors.db",
+            "context_threshold": 50000,  # chars before offload
+            "auto_capture_enabled": True,  # automatic memory capture
         }
 
         # Load from home config (global defaults)

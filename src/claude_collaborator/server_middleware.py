@@ -71,6 +71,10 @@ class ServerMiddleware:
         if not self.vector_store._check_embedding_available():
             return None
 
+        # Don't block waiting for model to load — skip if still warming up
+        if not self.vector_store.is_model_ready():
+            return None
+
         # Build query from tool name and key arguments
         query_parts = [tool_name]
 

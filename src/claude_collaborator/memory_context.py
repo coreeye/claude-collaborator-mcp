@@ -311,7 +311,7 @@ class ContextTracker:
         """
         results = []
 
-        if include_offloaded and self.vector_store._check_embedding_available():
+        if include_offloaded and self.vector_store.is_model_ready():
             # Search vector store for offloaded context
             vector_results = self.vector_store.search(
                 query=query,
@@ -322,7 +322,7 @@ class ContextTracker:
 
         # Also search current context
         query_embedding = None
-        if self.vector_store._check_embedding_available():
+        if self.vector_store.is_model_ready():
             query_embedding = self.vector_store._compute_embedding(query)
 
         for item in self.context_items:

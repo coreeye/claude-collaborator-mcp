@@ -4,6 +4,7 @@ Provides embedding-based semantic search capabilities
 """
 
 import json
+import os
 import sqlite3
 import uuid
 from datetime import datetime
@@ -11,6 +12,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+# Suppress SentenceTransformer output at import time, before any model loading.
+# These env vars must be set before importing sentence_transformers.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 
 class VectorStore:
@@ -40,12 +49,15 @@ class VectorStore:
         self._warmup_thread = None
         self._model_lock = __import__('threading').Lock()
 
+        self._warmup_started = False
+
         # Initialize database
         self._init_db()
 
-        # Start background warmup of the embedding model
-        # This prevents the first search from blocking for 15-30s
-        self._start_warmup()
+        # NOTE: Warmup is NOT started here. It must be started after the MCP
+        # stdio transport has captured its sys.stdout reference, otherwise the
+        # stdout redirect during model loading can corrupt the transport.
+        # Call ensure_warmup_started() from the first tool dispatch.
 
     # Cache at module level - check once, use forever
     _ST_AVAILABLE = None
@@ -78,19 +90,33 @@ class VectorStore:
         self._embedding_available = False
         return False
 
+    def ensure_warmup_started(self):
+        """Start the background warmup if not already started.
+        Must be called after the MCP transport has initialized."""
+        if not self._warmup_started:
+            self._warmup_started = True
+            self._start_warmup()
+
     def _start_warmup(self):
         """Pre-load embedding model in background thread to avoid first-call latency"""
         import threading
 
+        self._model_ready = False
+
         def _warmup():
             try:
                 self._get_embedding_model()
+                self._model_ready = True
             except Exception:
                 pass
 
         if self._check_embedding_available():
             self._warmup_thread = threading.Thread(target=_warmup, daemon=True)
             self._warmup_thread.start()
+
+    def is_model_ready(self) -> bool:
+        """Check if the embedding model has finished loading (non-blocking)."""
+        return getattr(self, '_model_ready', False) or self._embedding_model is not None
 
     def _get_embedding_model(self):
         """Get or lazy-load the embedding model (thread-safe)"""
@@ -100,8 +126,30 @@ class VectorStore:
         # Use lock to prevent duplicate loading from main + warmup threads
         with self._model_lock:
             if self._embedding_model is None:
-                from sentence_transformers import SentenceTransformer
-                self._embedding_model = SentenceTransformer(self.embedding_model_name)
+                import logging
+                # Suppress logging from model loading libraries
+                for name in ["sentence_transformers", "transformers",
+                             "huggingface_hub", "filelock"]:
+                    logging.getLogger(name).setLevel(logging.ERROR)
+                # Redirect fd 1 and fd 2 to devnull during model loading.
+                # SentenceTransformer prints progress and load reports directly
+                # to fd 1 (C-level stdout). The MCP transport has been set up
+                # (in main()) to use a dup'd fd instead of fd 1, so this
+                # redirect is safe — it only catches stray library output.
+                stdout_backup = os.dup(1)
+                stderr_backup = os.dup(2)
+                devnull_fd = os.open(os.devnull, os.O_WRONLY)
+                try:
+                    os.dup2(devnull_fd, 1)
+                    os.dup2(devnull_fd, 2)
+                    from sentence_transformers import SentenceTransformer
+                    self._embedding_model = SentenceTransformer(self.embedding_model_name)
+                finally:
+                    os.dup2(stdout_backup, 1)
+                    os.dup2(stderr_backup, 2)
+                    os.close(devnull_fd)
+                    os.close(stdout_backup)
+                    os.close(stderr_backup)
 
         return self._embedding_model
 
@@ -190,6 +238,10 @@ class VectorStore:
         if not self._check_embedding_available():
             return None
 
+        # Don't block waiting for model warmup — return None if not ready
+        if not self.is_model_ready():
+            return None
+
         # Generate unique ID
         vector_id = str(uuid.uuid4())
 
@@ -243,6 +295,10 @@ class VectorStore:
             List of results with similarity scores
         """
         if not self._check_embedding_available():
+            return []
+
+        # Don't block waiting for model warmup — return empty if not ready
+        if not self.is_model_ready():
             return []
 
         # Compute query embedding

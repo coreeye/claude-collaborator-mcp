@@ -7,6 +7,7 @@ Generic, configurable - works with any C# codebase.
 """
 
 import asyncio
+import sys
 import traceback
 from pathlib import Path
 from typing import Optional
@@ -124,7 +125,7 @@ class ClaudeCollaboratorServer(ServerMiddleware):
                 self.session_state = SessionState(str(path))
 
             except Exception as e:
-                print(f"Warning: Vector memory initialization failed: {e}")
+                print(f"Warning: Vector memory initialization failed: {e}", file=sys.stderr)
                 self.vector_store = None
                 self.auto_capture = None
                 self.context_tracker = None
@@ -150,9 +151,9 @@ class ClaudeCollaboratorServer(ServerMiddleware):
         try:
             self._initialize_codebase(Path(self._configured_codebase_path))
         except Exception as e:
-            print(f"Warning: Could not initialize codebase: {e}")
-            print(f"  Path was: {self._configured_codebase_path}")
-            print(f"  Use switch_codebase() to select a codebase manually.")
+            print(f"Warning: Could not initialize codebase: {e}", file=sys.stderr)
+            print(f"  Path was: {self._configured_codebase_path}", file=sys.stderr)
+            print(f"  Use switch_codebase() to select a codebase manually.", file=sys.stderr)
 
     def switch_codebase(self, path: str) -> dict:
         """Switch to a different codebase."""
@@ -246,6 +247,39 @@ class ClaudeCollaboratorServer(ServerMiddleware):
             )
         return True, None
 
+    def _dispatch_tool(self, name: str, arguments: dict) -> list[TextContent]:
+        """Synchronous tool dispatch — runs in a thread executor to avoid blocking the event loop."""
+        # Start embedding model warmup on first tool call (after MCP transport is up)
+        if self.vector_store and not self.vector_store._warmup_started:
+            self.vector_store.ensure_warmup_started()
+
+        # Pre-tool: retrieve relevant context
+        retrieved_context = self._auto_retrieve_context(name, arguments)
+        self._current_retrieved_context = retrieved_context
+
+        # Check if tool requires initialization
+        if name not in NO_INIT_REQUIRED:
+            is_ready, error_msg = self._check_initialized()
+            if not is_ready:
+                return self._process_tool_result(name, arguments,
+                    [TextContent(type="text", text=error_msg)])
+
+        # Dispatch to handler
+        handler = TOOL_HANDLERS.get(name)
+        if not handler:
+            return self._process_tool_result(name, arguments,
+                [TextContent(type="text", text=f"Unknown tool: {name}")])
+
+        result_text = handler(self, arguments)
+
+        # Auto-capture for certain tools
+        from claude_collaborator.tool_handlers import AUTO_CAPTURE_TOOLS
+        if name in AUTO_CAPTURE_TOOLS:
+            self._maybe_auto_capture(name, arguments, result_text)
+
+        return self._process_tool_result(name, arguments,
+            [TextContent(type="text", text=result_text)])
+
     def _register_tools(self):
         """Register all MCP tools"""
 
@@ -256,32 +290,12 @@ class ClaudeCollaboratorServer(ServerMiddleware):
         @self.app.call_tool()
         async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             try:
-                # Pre-tool: retrieve relevant context
-                retrieved_context = self._auto_retrieve_context(name, arguments)
-                self._current_retrieved_context = retrieved_context
-
-                # Check if tool requires initialization
-                if name not in NO_INIT_REQUIRED:
-                    is_ready, error_msg = self._check_initialized()
-                    if not is_ready:
-                        return self._process_tool_result(name, arguments,
-                            [TextContent(type="text", text=error_msg)])
-
-                # Dispatch to handler
-                handler = TOOL_HANDLERS.get(name)
-                if not handler:
-                    return self._process_tool_result(name, arguments,
-                        [TextContent(type="text", text=f"Unknown tool: {name}")])
-
-                result_text = handler(self, arguments)
-
-                # Auto-capture for certain tools
-                from claude_collaborator.tool_handlers import AUTO_CAPTURE_TOOLS
-                if name in AUTO_CAPTURE_TOOLS:
-                    self._maybe_auto_capture(name, arguments, result_text)
-
-                return self._process_tool_result(name, arguments,
-                    [TextContent(type="text", text=result_text)])
+                # Run the entire tool dispatch in a thread to avoid blocking
+                # the async event loop (embedding model loading, vector search,
+                # and tool handlers can all block for seconds)
+                return await asyncio.get_event_loop().run_in_executor(
+                    None, self._dispatch_tool, name, arguments
+                )
 
             except Exception as e:
                 return self._process_tool_result(name, arguments,
@@ -299,6 +313,20 @@ class ClaudeCollaboratorServer(ServerMiddleware):
 
 def main():
     """Main entry point"""
+    import io
+    import os
+
+    # Protect the MCP stdio transport from stray stdout writes.
+    # SentenceTransformer and HuggingFace libraries print progress bars and
+    # load reports directly to fd 1 (stdout), corrupting the MCP JSON-RPC
+    # stream. We solve this by moving the real stdout to a separate fd
+    # BEFORE the MCP transport starts. The transport captures sys.stdout.buffer
+    # at init, so it will use the safe fd. Later, the warmup thread can
+    # redirect fd 1 to devnull without affecting the transport.
+    safe_stdout_fd = os.dup(1)  # Backup real stdout to a new fd
+    safe_stdout = os.fdopen(safe_stdout_fd, "wb", closefd=False)
+    sys.stdout = io.TextIOWrapper(safe_stdout, encoding="utf-8", line_buffering=True)
+
     server = ClaudeCollaboratorServer()
     asyncio.run(server.run())
 

@@ -12,6 +12,7 @@ You have access to a claude-collaborator MCP server with persistent memory and t
 ## When to Use `learn`
 
 Call `learn` immediately when you confirm any of these:
+- Whenever you discover something non-obvious that would be useful in future sessions — workflows, build processes, debugging techniques, architecture patterns, project conventions, or environment quirks.
 - A non-obvious pattern or convention in the codebase (e.g., "all DICOM files go through Distiller before Annotator")
 - A debugging root cause or workaround you verified
 - User preferences about how they work (e.g., "prefers single PRs over split ones")
